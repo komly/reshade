@@ -8,15 +8,11 @@ namespace reshade
 	{
 		// Wine's key polling can synchronously wait for a message thread which needs this mutex.
 		lock.unlock();
-		try
+		struct restore_lock
 		{
-			poll();
-		}
-		catch (...)
-		{
-			lock.lock();
-			throw;
-		}
-		lock.lock();
+			std::unique_lock<std::recursive_mutex> &lock;
+			~restore_lock() { lock.lock(); }
+		} restore { lock };
+		poll();
 	}
 }
