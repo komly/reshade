@@ -1,0 +1,33 @@
+name: CrossOver input deadlock fix
+on:
+  push:
+    branches: [codex/crossover-input-deadlock]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - uses: microsoft/setup-msbuild@v3
+      - name: Test synchronous input polling
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          cl /std:c++17 /EHsc tests\input_poll.cpp /Fe:input_poll.exe
+          if errorlevel 1 exit /b 1
+          input_poll.exe
+      - name: Build x64 Release
+        run: msbuild ReShade.sln /m /p:Configuration=Release /p:Platform=64-bit
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ReShade-CrossOver-x64
+          path: bin/x64/Release/ReShade64.dll
+          if-no-files-found: error

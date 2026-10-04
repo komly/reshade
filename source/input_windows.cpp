@@ -4,6 +4,7 @@
  */
 
 #include "input.hpp"
+#include "input_poll.hpp"
 #include "dll_log.hpp"
 #include "hook_manager.hpp"
 #include <atomic>
@@ -300,10 +301,34 @@ void reshade::input::max_mouse_position(unsigned int position[2]) const
 	position[1] = rect.bottom;
 }
 
-void reshade::input::next_frame()
+void reshade::input::next_frame(std::unique_lock<std::recursive_mutex> &input_lock)
 {
 	static const auto GetKeyState_trampoline = reshade::hooks::is_hooked(GetKeyState) ? reshade::hooks::call(HookGetKeyState, GetKeyState) : GetKeyState;
 	static const auto GetAsyncKeyState_trampoline = reshade::hooks::is_hooked(GetAsyncKeyState) ? reshade::hooks::call(HookGetAsyncKeyState, GetAsyncKeyState) : GetAsyncKeyState;
+
+	assert(input_lock.owns_lock() && input_lock.mutex() == &_mutex);
+	const DWORD time = GetTickCount();
+	uint8_t keys_before_poll[256];
+	unsigned int times_before_poll[256];
+	std::copy_n(_keys, 256, keys_before_poll);
+	std::copy_n(_keys_time, 256, times_before_poll);
+	bool released[256] = {};
+	SHORT caps_lock_state, alt_state, print_screen_state;
+	poll_input_unlocked(input_lock, [&] {
+		for (unsigned int i = 8; i < 256; ++i)
+			if ((keys_before_poll[i] & 0x80) != 0 && (time - times_before_poll[i]) > 5000)
+				released[i] = (GetAsyncKeyState_trampoline(i) & 0x8000) == 0;
+		caps_lock_state = GetKeyState_trampoline(VK_CAPITAL);
+		alt_state = GetKeyState_trampoline(VK_MENU);
+		print_screen_state = GetAsyncKeyState_trampoline(VK_SNAPSHOT);
+	});
+	// Do not overwrite newer messages delivered while the system poll released the mutex.
+	const auto unchanged = [&](unsigned int key) {
+		return _keys[key] == keys_before_poll[key] && _keys_time[key] == times_before_poll[key];
+	};
+	bool unchanged_keys[256];
+	for (unsigned int i = 0; i < 256; ++i)
+		unchanged_keys[i] = unchanged(i);
 
 	_frame_count++;
 
@@ -317,11 +342,8 @@ void reshade::input::next_frame()
 	// Do not check mouse buttons here, since 'GetAsyncKeyState' always returns the state of the physical mouse buttons, not the logical ones in case they were remapped
 	// See https://docs.microsoft.com/windows/win32/api/winuser/nf-winuser-getasynckeystate
 	// And time is not tracked for mouse buttons anyway
-	const DWORD time = GetTickCount();
 	for (unsigned int i = 8; i < 256; ++i)
-		if ((_keys[i] & 0x80) != 0 &&
-			(time - _keys_time[i]) > 5000 &&
-			(GetAsyncKeyState_trampoline(i) & 0x8000) == 0)
+		if (released[i] && unchanged_keys[i])
 			(_keys[i] = 0x08);
 
 	_text_input.clear();
@@ -330,16 +352,17 @@ void reshade::input::next_frame()
 	_last_mouse_position[1] = _mouse_position[1];
 
 	// Update caps lock state
-	_keys[VK_CAPITAL] |= GetKeyState_trampoline(VK_CAPITAL) & 0x1;
+	if (unchanged_keys[VK_CAPITAL])
+		_keys[VK_CAPITAL] |= caps_lock_state & 0x1;
 
 	// Update modifier key state
-	if ((_keys[VK_MENU] & 0x88) != 0 &&
-		(GetKeyState_trampoline(VK_MENU) & 0x8000) == 0)
+	if (unchanged_keys[VK_MENU] && (_keys[VK_MENU] & 0x88) != 0 &&
+		(alt_state & 0x8000) == 0)
 		(_keys[VK_MENU] = 0x08);
 
 	// Update print screen state (there is no key down message, but the key up one is received via the message queue)
-	if ((_keys[VK_SNAPSHOT] & 0x80) == 0 &&
-		(GetAsyncKeyState_trampoline(VK_SNAPSHOT) & 0x8000) != 0)
+	if (unchanged_keys[VK_SNAPSHOT] && (_keys[VK_SNAPSHOT] & 0x80) == 0 &&
+		(print_screen_state & 0x8000) != 0)
 		(_keys[VK_SNAPSHOT] = 0x88),
 		(_keys_time[VK_SNAPSHOT] = time);
 

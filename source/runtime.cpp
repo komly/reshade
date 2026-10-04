@@ -941,7 +941,7 @@ void reshade::runtime::on_present()
 
 	// Update input status
 	if (_primary_input_handler && _input != nullptr)
-		_input->next_frame();
+		_input->next_frame(input_lock);
 	if (_primary_input_handler && _input_gamepad != nullptr)
 		_input_gamepad->next_frame();
 
